@@ -16,7 +16,6 @@ https://github.com/MichaelAccount1/MKW-Item-Panel
 import ctypes
 from ctypes import wintypes
 import struct
-import subprocess
 import threading
 import time
 import tkinter as tk
@@ -59,6 +58,34 @@ kernel32.VirtualQueryEx.argtypes = [
     wintypes.HANDLE, ctypes.c_void_p, ctypes.POINTER(MEMORY_BASIC_INFORMATION), SIZE_T,
 ]
 kernel32.CloseHandle.restype = wintypes.HANDLE
+
+# Process enumeration (no subprocess needed — avoids flashing console windows)
+TH32CS_SNAPPROCESS = 0x00000002
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+MAX_PATH = 260
+
+
+class PROCESSENTRY32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", ctypes.c_char * MAX_PATH),
+    ]
+
+
+kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+kernel32.Process32First.restype = wintypes.BOOL
+kernel32.Process32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
+kernel32.Process32Next.restype = wintypes.BOOL
+kernel32.Process32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
 
 PROCESS_ALL_ACCESS = 0x1F0FFF
 MEM_COMMIT = 0x1000
@@ -143,15 +170,25 @@ VK_NAMES = {VK_F13 + i: f"F{13 + i}" for i in range(12)}
 #  Dolphin process helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def find_dolphin_pid():
-    """Return the PID of the first running Dolphin process, or None."""
-    result = subprocess.run(
-        ["powershell", "-Command",
-         "Get-Process -Name Dolphin -ErrorAction SilentlyContinue | "
-         "Select-Object -ExpandProperty Id"],
-        capture_output=True, text=True,
-    )
-    pids = [int(x) for x in result.stdout.strip().split("\n") if x.strip().isdigit()]
-    return pids[0] if pids else None
+    """Return the PID of the first running Dolphin process, or None.
+    Uses Win32 CreateToolhelp32Snapshot — no subprocess, no console flash."""
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snap == INVALID_HANDLE_VALUE:
+        return None
+    try:
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        if not kernel32.Process32First(snap, ctypes.byref(entry)):
+            return None
+        while True:
+            name = entry.szExeFile.split(b"\x00", 1)[0].decode("utf-8", errors="ignore").lower()
+            if name == "dolphin.exe":
+                return entry.th32ProcessID
+            if not kernel32.Process32Next(snap, ctypes.byref(entry)):
+                break
+    finally:
+        kernel32.CloseHandle(snap)
+    return None
 
 
 def _read(handle, addr, size):
