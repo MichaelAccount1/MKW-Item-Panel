@@ -15,16 +15,20 @@ https://github.com/MichaelAccount1/MKW-Item-Panel
 
 import ctypes
 from ctypes import wintypes
+import json
+import os
 import struct
+import sys
 import threading
 import time
 import tkinter as tk
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Win32 setup — ReadProcessMemory / WriteProcessMemory / VirtualQueryEx
+#  Win32 setup — kernel32, user32, winmm
 # ─────────────────────────────────────────────────────────────────────────────
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 user32 = ctypes.WinDLL("user32", use_last_error=True)
+winmm = ctypes.WinDLL("winmm", use_last_error=True)
 SIZE_T = ctypes.c_size_t
 
 user32.GetAsyncKeyState.restype = ctypes.c_short
@@ -87,6 +91,34 @@ kernel32.Process32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY
 kernel32.Process32Next.restype = wintypes.BOOL
 kernel32.Process32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
 
+# ── Joystick API (winmm) ────────────────────────────────────────────────────
+JOYERR_NOERROR = 0
+JOY_RETURNBUTTONS = 0x00000080
+
+
+class JOYINFOEX(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("dwXpos", wintypes.DWORD),
+        ("dwYpos", wintypes.DWORD),
+        ("dwZpos", wintypes.DWORD),
+        ("dwRpos", wintypes.DWORD),
+        ("dwUpos", wintypes.DWORD),
+        ("dwVpos", wintypes.DWORD),
+        ("dwButtons", wintypes.DWORD),
+        ("dwButtonNumber", wintypes.DWORD),
+        ("dwPOV", wintypes.DWORD),
+        ("dwReserved1", wintypes.DWORD),
+        ("dwReserved2", wintypes.DWORD),
+    ]
+
+
+winmm.joyGetPosEx.restype = wintypes.UINT
+winmm.joyGetPosEx.argtypes = [wintypes.UINT, ctypes.POINTER(JOYINFOEX)]
+winmm.joyGetNumDevs.restype = wintypes.UINT
+winmm.joyGetNumDevs.argtypes = []
+
 PROCESS_ALL_ACCESS = 0x1F0FFF
 MEM_COMMIT = 0x1000
 
@@ -140,30 +172,96 @@ COUNT_OFFSET = 0x90   # s32 — item quantity     (1 for most, 3 for triples)
 HAS_ITEM_BIT = 0x200  # The flag bit that must be set for the game to show the item
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Global hotkey mapping — F13 through F24
-#  Designed for Logitech side panels and other controllers with "esoteric" keys
-#  that don't conflict with Dolphin or other applications.
+#  Configurable keybinds  (loaded from keybinds.json next to the exe/script)
 # ─────────────────────────────────────────────────────────────────────────────
-VK_F13 = 0x7C
-# Index into ITEMS[] for each hotkey, plus special actions at the end
-HOTKEY_MAP = [
-    # (VK code,  action)  — action is an ITEMS index, or "clear" / "hold"
-    (VK_F13 + 0,  0),       # F13 → Star
-    (VK_F13 + 1,  1),       # F14 → Bullet Bill
-    (VK_F13 + 2,  2),       # F15 → Golden Mushroom
-    (VK_F13 + 3,  3),       # F16 → Mega Mushroom
-    (VK_F13 + 4,  4),       # F17 → Blue Shell
-    (VK_F13 + 5,  5),       # F18 → Lightning
-    (VK_F13 + 6,  6),       # F19 → POW Block
-    (VK_F13 + 7,  7),       # F20 → Blooper
-    (VK_F13 + 8,  8),       # F21 → Mushroom
-    (VK_F13 + 9,  9),       # F22 → 3x Mushroom
-    (VK_F13 + 10, "clear"), # F23 → Clear item
-    (VK_F13 + 11, "hold"),  # F24 → Toggle hold
-]
+# All action names that can appear in the config (items + special actions)
+ACTION_NAMES = [item[2] for item in ITEMS] + ["Clear", "Toggle Hold"]
 
-# Friendly key name for each VK code (shown in the UI)
-VK_NAMES = {VK_F13 + i: f"F{13 + i}" for i in range(12)}
+# Key name → Win32 virtual-key code
+KEY_NAME_TO_VK = {}
+for _i in range(1, 25):
+    KEY_NAME_TO_VK[f"f{_i}"] = 0x6F + _i
+for _i in range(10):
+    KEY_NAME_TO_VK[str(_i)] = 0x30 + _i
+for _i in range(26):
+    KEY_NAME_TO_VK[chr(0x61 + _i)] = 0x41 + _i
+for _i in range(10):
+    KEY_NAME_TO_VK[f"numpad{_i}"] = 0x60 + _i
+KEY_NAME_TO_VK.update({
+    "multiply": 0x6A, "add": 0x6B, "subtract": 0x6D,
+    "decimal": 0x6E, "divide": 0x6F,
+    "insert": 0x2D, "delete": 0x2E, "home": 0x24, "end": 0x23,
+    "pageup": 0x21, "pagedown": 0x22,
+    "scrolllock": 0x91, "pause": 0x13, "capslock": 0x14,
+})
+
+VK_TO_DISPLAY = {v: k.upper() for k, v in KEY_NAME_TO_VK.items()}
+
+
+def _config_path():
+    """Return the path to keybinds.json, next to the exe (frozen) or script."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "keybinds.json")
+
+
+def _default_config():
+    """Return the default config dict (joystick on, no keyboard binds)."""
+    keys = {}
+    for name in ACTION_NAMES:
+        keys[name] = ""
+    return {"joystick": True, "keys": keys}
+
+
+def load_config():
+    """Load keybinds.json, creating it with defaults if missing.
+    Returns (joystick_enabled, hotkey_map) where hotkey_map is
+    list of (vk_code, action_index_or_string)."""
+    path = _config_path()
+    if not os.path.exists(path):
+        cfg = _default_config()
+        with open(path, "w") as f:
+            json.dump(cfg, f, indent=4)
+    else:
+        with open(path) as f:
+            cfg = json.load(f)
+        # Merge any new items that might have been added
+        default = _default_config()
+        for k in default["keys"]:
+            if k not in cfg.get("keys", {}):
+                cfg.setdefault("keys", {})[k] = ""
+        if "joystick" not in cfg:
+            cfg["joystick"] = True
+
+    joy_enabled = cfg.get("joystick", True)
+
+    hotkey_map = []  # [(vk_code, action)]
+    key_labels = {}  # {action_name: display_string}
+    keys = cfg.get("keys", {})
+    for action_name, key_str in keys.items():
+        if not key_str:
+            continue
+        vk = KEY_NAME_TO_VK.get(key_str.strip().lower())
+        if vk is None:
+            continue
+        # Determine action
+        if action_name == "Clear":
+            hotkey_map.append((vk, "clear"))
+            key_labels["Clear"] = key_str.strip().upper()
+        elif action_name == "Toggle Hold":
+            hotkey_map.append((vk, "hold"))
+            key_labels["Toggle Hold"] = key_str.strip().upper()
+        else:
+            # Find item index by name
+            for idx, (_, _, name, _) in enumerate(ITEMS):
+                if name == action_name:
+                    hotkey_map.append((vk, idx))
+                    key_labels[action_name] = key_str.strip().upper()
+                    break
+
+    return joy_enabled, hotkey_map, key_labels
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -271,6 +369,9 @@ class ItemPanel:
     """Main application window."""
 
     def __init__(self):
+        # Load config before building UI
+        self.joy_enabled, self.hotkey_map, self.key_labels = load_config()
+
         self.root = tk.Tk()
         self.root.title("MKW Item Panel")
         self.root.attributes("-topmost", True)
@@ -293,6 +394,7 @@ class ItemPanel:
         self.player_slot = None
         self.hold_item = None          # (item_id, count) when holding
         self.last_give_name = ""
+        self.joy_connected = False
 
         self._build_ui()
 
@@ -300,7 +402,10 @@ class ItemPanel:
         threading.Thread(target=self._connection_loop, daemon=True).start()
         threading.Thread(target=self._monitor_loop, daemon=True).start()
         threading.Thread(target=self._hold_loop, daemon=True).start()
-        threading.Thread(target=self._hotkey_loop, daemon=True).start()
+        if self.hotkey_map:
+            threading.Thread(target=self._hotkey_loop, daemon=True).start()
+        if self.joy_enabled:
+            threading.Thread(target=self._joystick_loop, daemon=True).start()
 
         self.root.protocol("WM_DELETE_WINDOW", self._quit)
         self.root.mainloop()
@@ -328,21 +433,19 @@ class ItemPanel:
         )
         self.slot_label.pack(pady=(0, 6))
 
-        # Build a lookup: ITEMS index → hotkey name (for labeling buttons)
-        hotkey_labels = {}
-        for vk, action in HOTKEY_MAP:
-            if isinstance(action, int):
-                hotkey_labels[action] = VK_NAMES[vk]
-
         # Item button grid
         grid = tk.Frame(self.root, bg=BG)
         grid.pack(padx=8, pady=2)
         self.buttons = []
         for i, (item_id, count, name, color) in enumerate(ITEMS):
             row, col = divmod(i, 4)
-            label = name
-            if i in hotkey_labels:
-                label = f"{name}\n[{hotkey_labels[i]}]"
+            # Build label with optional keybind / joystick tag
+            tags = []
+            if name in self.key_labels:
+                tags.append(self.key_labels[name])
+            if self.joy_enabled:
+                tags.append(f"J{i + 1}")
+            label = f"{name}\n[{' | '.join(tags)}]" if tags else name
             btn = tk.Button(
                 grid, text=label, font=(FONT, 9, "bold"),
                 fg=color, bg=BTN_BG, activebackground="#333", activeforeground=color,
@@ -353,25 +456,45 @@ class ItemPanel:
             self.buttons.append(btn)
 
         # Clear button
+        clear_tags = []
+        if "Clear" in self.key_labels:
+            clear_tags.append(self.key_labels["Clear"])
+        if self.joy_enabled:
+            clear_tags.append(f"J{len(ITEMS) + 1}")
+        clear_suffix = f"  [{' | '.join(clear_tags)}]" if clear_tags else ""
         frame = tk.Frame(self.root, bg=BG)
         frame.pack(pady=(4, 2))
         self.clear_btn = tk.Button(
-            frame, text="CLEAR ITEM  [F23]", font=(FONT, 11, "bold"),
+            frame, text=f"CLEAR ITEM{clear_suffix}", font=(FONT, 11, "bold"),
             fg="#ff5555", bg=BTN_BG, activebackground="#333",
-            relief=tk.FLAT, width=20, state=tk.DISABLED,
+            relief=tk.FLAT, width=24, state=tk.DISABLED,
             command=self._clear,
         )
         self.clear_btn.pack()
 
         # Hold checkbox
+        hold_tags = []
+        if "Toggle Hold" in self.key_labels:
+            hold_tags.append(self.key_labels["Toggle Hold"])
+        if self.joy_enabled:
+            hold_tags.append(f"J{len(ITEMS) + 2}")
+        hold_suffix = f"  [{' | '.join(hold_tags)}]" if hold_tags else ""
         self.hold_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            self.root, text="Hold (auto re-give)  [F24]",
+            self.root, text=f"Hold (auto re-give){hold_suffix}",
             variable=self.hold_var, font=(FONT, 10),
             fg="#888", bg=BG, selectcolor="#222",
             activebackground=BG, activeforeground="#aaa",
             command=self._on_hold_toggled,
         ).pack(pady=(2, 2))
+
+        # Joystick status line
+        if self.joy_enabled:
+            self.joy_label = tk.Label(
+                self.root, text="Joystick: scanning...", font=(FONT, 9),
+                fg="#555", bg=BG,
+            )
+            self.joy_label.pack(pady=(0, 0))
 
         # Feedback line
         self.feedback_label = tk.Label(
@@ -399,6 +522,10 @@ class ItemPanel:
 
     def _set_feedback(self, text, color="#3e6"):
         self._ui(lambda: self.feedback_label.config(text=text, fg=color))
+
+    def _set_joy(self, text, color="#555"):
+        if self.joy_enabled:
+            self._ui(lambda: self.joy_label.config(text=text, fg=color))
 
     def _set_buttons_state(self, state):
         self._ui(lambda: [b.config(state=state) for b in self.buttons])
@@ -567,6 +694,11 @@ class ItemPanel:
         if not self.hold_var.get():
             self.hold_item = None
 
+    def _toggle_hold(self):
+        """Toggle the Hold checkbox (called from hotkey/joystick)."""
+        self.hold_var.set(not self.hold_var.get())
+        self._on_hold_toggled()
+
     # ── Hold loop (continuous re-injection at ~60 Hz) ───────────────────────
     def _hold_loop(self):
         while self.running:
@@ -578,16 +710,15 @@ class ItemPanel:
             else:
                 time.sleep(0.1)
 
-    # ── Global hotkey loop (~30 Hz polling) ──────────────────────────────────
+    # ── Keyboard hotkey loop (~30 Hz polling) ────────────────────────────────
     def _hotkey_loop(self):
-        """Poll F13-F24 via GetAsyncKeyState for global hotkeys."""
+        """Poll configured keys via GetAsyncKeyState."""
         prev_down = set()
         while self.running:
-            for vk, action in HOTKEY_MAP:
+            for vk, action in self.hotkey_map:
                 state = user32.GetAsyncKeyState(vk)
                 is_down = bool(state & 0x8000)
                 if is_down and vk not in prev_down:
-                    # Key just pressed — trigger action
                     if action == "clear":
                         self._ui(self._clear)
                     elif action == "hold":
@@ -601,10 +732,58 @@ class ItemPanel:
                     prev_down.discard(vk)
             time.sleep(1 / 30)
 
-    def _toggle_hold(self):
-        """Toggle the Hold checkbox (called from hotkey)."""
-        self.hold_var.set(not self.hold_var.get())
-        self._on_hold_toggled()
+    # ── Joystick input loop (~30 Hz polling) ─────────────────────────────────
+    def _joystick_loop(self):
+        """Poll all connected joysticks and map buttons to items.
+        Buttons 0-18 → items, button 19 → clear, button 20 → toggle hold."""
+        prev_buttons = {}  # joy_id → previous dwButtons bitmask
+        num_actions = len(ITEMS) + 2  # items + clear + hold
+        was_connected = False
+
+        while self.running:
+            found_any = False
+            max_devs = winmm.joyGetNumDevs()
+
+            for joy_id in range(min(max_devs, 16)):
+                info = JOYINFOEX()
+                info.dwSize = ctypes.sizeof(JOYINFOEX)
+                info.dwFlags = JOY_RETURNBUTTONS
+                result = winmm.joyGetPosEx(joy_id, ctypes.byref(info))
+                if result != JOYERR_NOERROR:
+                    prev_buttons.pop(joy_id, None)
+                    continue
+
+                found_any = True
+                old = prev_buttons.get(joy_id, 0)
+                new = info.dwButtons
+
+                # Check each button for rising edge (just pressed)
+                for btn in range(min(32, num_actions)):
+                    mask = 1 << btn
+                    if (new & mask) and not (old & mask):
+                        if btn < len(ITEMS):
+                            item_id, count, name, _ = ITEMS[btn]
+                            self._ui(
+                                lambda iid=item_id, c=count, n=name: self._give(iid, c, n)
+                            )
+                        elif btn == len(ITEMS):
+                            self._ui(self._clear)
+                        elif btn == len(ITEMS) + 1:
+                            self._ui(self._toggle_hold)
+
+                prev_buttons[joy_id] = new
+
+            # Update joystick status in UI
+            if found_any and not was_connected:
+                self._set_joy("Joystick: connected", "#3e6")
+                was_connected = True
+            elif not found_any and was_connected:
+                self._set_joy("Joystick: disconnected", "#f33")
+                was_connected = False
+            elif not found_any and not was_connected:
+                self._set_joy("Joystick: not found", "#555")
+
+            time.sleep(1 / 30)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

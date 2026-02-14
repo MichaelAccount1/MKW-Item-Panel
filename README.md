@@ -15,7 +15,8 @@ Works with **Retro Rewind**, **CTGP**, and vanilla MKW (PAL — RMCP01).
 - **Clear button** — instantly remove your held item
 - **Auto-detect** — automatically figures out which player slot you're in
 - **Always on top** — dark-themed overlay window, great for a second monitor
-- **Global hotkeys (F13–F24)** — bind items to keys that won't conflict with Dolphin, perfect for Logitech side panels and programmable controllers
+- **Joystick / side panel support** — auto-detects game controllers and maps buttons directly to items (no remapping software needed)
+- **Configurable keyboard hotkeys** — bind any key to any item via `keybinds.json`
 - **Zero setup** — just run the `.exe` while Dolphin is open
 
 ## Download
@@ -40,20 +41,46 @@ The status indicator shows:
 | Green | In race — ready to give items |
 | Gold | Hold mode active |
 
-## Hotkeys
+## Joystick / Side Panel Support
 
-The panel listens for **F13–F24** globally (even when the window is not focused). These keys are rarely used by games or emulators, making them ideal for programmable controllers like the Logitech Farm Sim Side Panel.
+If you have a game controller, side panel, or button box plugged in, the panel **automatically detects it** and maps its buttons to items:
 
-| Key | Action | Key | Action |
-|-----|--------|-----|--------|
-| F13 | Star | F19 | POW Block |
-| F14 | Bullet Bill | F20 | Blooper |
-| F15 | Golden Mushroom | F21 | Mushroom |
-| F16 | Mega Mushroom | F22 | 3x Mushroom |
-| F17 | Blue Shell | F23 | Clear item |
-| F18 | Lightning | F24 | Toggle hold |
+| Button | Action | Button | Action |
+|--------|--------|--------|--------|
+| 1 | Star | 11 | Red Shell |
+| 2 | Bullet Bill | 12 | 3x Red Shell |
+| 3 | Golden Mushroom | 13 | Green Shell |
+| 4 | Mega Mushroom | 14 | 3x Green Shell |
+| 5 | Blue Shell | 15 | Banana |
+| 6 | Lightning | 16 | 3x Banana |
+| 7 | POW Block | 17 | Bob-omb |
+| 8 | Blooper | 18 | Fake Item Box |
+| 9 | Mushroom | 19 | Thunder Cloud |
+| 10 | 3x Mushroom | 20 | Clear Item |
+| | | 21 | Toggle Hold |
 
-Map your side panel buttons to F13–F24 in the Logitech software (or any key remapper) and you're good to go.
+No remapping software needed — just plug in and press buttons. To disable joystick input, set `"joystick": false` in `keybinds.json`.
+
+## Keyboard Hotkeys
+
+On first launch, a `keybinds.json` file is created next to the exe. Edit it to bind any key to any item:
+
+```json
+{
+    "joystick": true,
+    "keys": {
+        "Star": "f1",
+        "Bullet Bill": "f2",
+        "Clear": "f11",
+        "Toggle Hold": "f12",
+        ...
+    }
+}
+```
+
+Supported key names: `f1`–`f24`, `0`–`9`, `a`–`z`, `numpad0`–`numpad9`, `insert`, `delete`, `home`, `end`, `pageup`, `pagedown`, `pause`, `scrolllock`, and numpad operators (`multiply`, `add`, `subtract`, `decimal`, `divide`).
+
+Leave a value as `""` to unbind that item. Hotkeys work globally (even when the panel window is not focused).
 
 ## How It Works
 
