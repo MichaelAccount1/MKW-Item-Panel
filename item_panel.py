@@ -25,7 +25,11 @@ import tkinter as tk
 #  Win32 setup — ReadProcessMemory / WriteProcessMemory / VirtualQueryEx
 # ─────────────────────────────────────────────────────────────────────────────
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+user32 = ctypes.WinDLL("user32", use_last_error=True)
 SIZE_T = ctypes.c_size_t
+
+user32.GetAsyncKeyState.restype = ctypes.c_short
+user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 
 
 class MEMORY_BASIC_INFORMATION(ctypes.Structure):
@@ -107,6 +111,32 @@ ITEM_OFFSET  = 0x8C   # s32 — current item ID  (see ITEM_NAMES)
 COUNT_OFFSET = 0x90   # s32 — item quantity     (1 for most, 3 for triples)
 
 HAS_ITEM_BIT = 0x200  # The flag bit that must be set for the game to show the item
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Global hotkey mapping — F13 through F24
+#  Designed for Logitech side panels and other controllers with "esoteric" keys
+#  that don't conflict with Dolphin or other applications.
+# ─────────────────────────────────────────────────────────────────────────────
+VK_F13 = 0x7C
+# Index into ITEMS[] for each hotkey, plus special actions at the end
+HOTKEY_MAP = [
+    # (VK code,  action)  — action is an ITEMS index, or "clear" / "hold"
+    (VK_F13 + 0,  0),       # F13 → Star
+    (VK_F13 + 1,  1),       # F14 → Bullet Bill
+    (VK_F13 + 2,  2),       # F15 → Golden Mushroom
+    (VK_F13 + 3,  3),       # F16 → Mega Mushroom
+    (VK_F13 + 4,  4),       # F17 → Blue Shell
+    (VK_F13 + 5,  5),       # F18 → Lightning
+    (VK_F13 + 6,  6),       # F19 → POW Block
+    (VK_F13 + 7,  7),       # F20 → Blooper
+    (VK_F13 + 8,  8),       # F21 → Mushroom
+    (VK_F13 + 9,  9),       # F22 → 3x Mushroom
+    (VK_F13 + 10, "clear"), # F23 → Clear item
+    (VK_F13 + 11, "hold"),  # F24 → Toggle hold
+]
+
+# Friendly key name for each VK code (shown in the UI)
+VK_NAMES = {VK_F13 + i: f"F{13 + i}" for i in range(12)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +263,7 @@ class ItemPanel:
         threading.Thread(target=self._connection_loop, daemon=True).start()
         threading.Thread(target=self._monitor_loop, daemon=True).start()
         threading.Thread(target=self._hold_loop, daemon=True).start()
+        threading.Thread(target=self._hotkey_loop, daemon=True).start()
 
         self.root.protocol("WM_DELETE_WINDOW", self._quit)
         self.root.mainloop()
@@ -260,14 +291,23 @@ class ItemPanel:
         )
         self.slot_label.pack(pady=(0, 6))
 
+        # Build a lookup: ITEMS index → hotkey name (for labeling buttons)
+        hotkey_labels = {}
+        for vk, action in HOTKEY_MAP:
+            if isinstance(action, int):
+                hotkey_labels[action] = VK_NAMES[vk]
+
         # Item button grid
         grid = tk.Frame(self.root, bg=BG)
         grid.pack(padx=8, pady=2)
         self.buttons = []
         for i, (item_id, count, name, color) in enumerate(ITEMS):
             row, col = divmod(i, 4)
+            label = name
+            if i in hotkey_labels:
+                label = f"{name}\n[{hotkey_labels[i]}]"
             btn = tk.Button(
-                grid, text=name, font=(FONT, 10, "bold"),
+                grid, text=label, font=(FONT, 9, "bold"),
                 fg=color, bg=BTN_BG, activebackground="#333", activeforeground=color,
                 relief=tk.FLAT, width=14, height=2, state=tk.DISABLED,
                 command=lambda iid=item_id, c=count, n=name: self._give(iid, c, n),
@@ -279,7 +319,7 @@ class ItemPanel:
         frame = tk.Frame(self.root, bg=BG)
         frame.pack(pady=(4, 2))
         self.clear_btn = tk.Button(
-            frame, text="CLEAR ITEM", font=(FONT, 11, "bold"),
+            frame, text="CLEAR ITEM  [F23]", font=(FONT, 11, "bold"),
             fg="#ff5555", bg=BTN_BG, activebackground="#333",
             relief=tk.FLAT, width=20, state=tk.DISABLED,
             command=self._clear,
@@ -289,7 +329,7 @@ class ItemPanel:
         # Hold checkbox
         self.hold_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            self.root, text="Hold (auto re-give every frame)",
+            self.root, text="Hold (auto re-give)  [F24]",
             variable=self.hold_var, font=(FONT, 10),
             fg="#888", bg=BG, selectcolor="#222",
             activebackground=BG, activeforeground="#aaa",
@@ -500,6 +540,34 @@ class ItemPanel:
                 time.sleep(1 / 60)
             else:
                 time.sleep(0.1)
+
+    # ── Global hotkey loop (~30 Hz polling) ──────────────────────────────────
+    def _hotkey_loop(self):
+        """Poll F13-F24 via GetAsyncKeyState for global hotkeys."""
+        prev_down = set()
+        while self.running:
+            for vk, action in HOTKEY_MAP:
+                state = user32.GetAsyncKeyState(vk)
+                is_down = bool(state & 0x8000)
+                if is_down and vk not in prev_down:
+                    # Key just pressed — trigger action
+                    if action == "clear":
+                        self._ui(self._clear)
+                    elif action == "hold":
+                        self._ui(self._toggle_hold)
+                    elif isinstance(action, int) and action < len(ITEMS):
+                        item_id, count, name, _ = ITEMS[action]
+                        self._ui(lambda iid=item_id, c=count, n=name: self._give(iid, c, n))
+                if is_down:
+                    prev_down.add(vk)
+                else:
+                    prev_down.discard(vk)
+            time.sleep(1 / 30)
+
+    def _toggle_hold(self):
+        """Toggle the Hold checkbox (called from hotkey)."""
+        self.hold_var.set(not self.hold_var.get())
+        self._on_hold_toggled()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

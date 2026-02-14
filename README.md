@@ -15,6 +15,7 @@ Works with **Retro Rewind**, **CTGP**, and vanilla MKW (PAL — RMCP01).
 - **Clear button** — instantly remove your held item
 - **Auto-detect** — automatically figures out which player slot you're in
 - **Always on top** — dark-themed overlay window, great for a second monitor
+- **Global hotkeys (F13–F24)** — bind items to keys that won't conflict with Dolphin, perfect for Logitech side panels and programmable controllers
 - **Zero setup** — just run the `.exe` while Dolphin is open
 
 ## Download
@@ -38,6 +39,21 @@ The status indicator shows:
 | Yellow | Connected, waiting for a race to start |
 | Green | In race — ready to give items |
 | Gold | Hold mode active |
+
+## Hotkeys
+
+The panel listens for **F13–F24** globally (even when the window is not focused). These keys are rarely used by games or emulators, making them ideal for programmable controllers like the Logitech Farm Sim Side Panel.
+
+| Key | Action | Key | Action |
+|-----|--------|-----|--------|
+| F13 | Star | F19 | POW Block |
+| F14 | Bullet Bill | F20 | Blooper |
+| F15 | Golden Mushroom | F21 | Mushroom |
+| F16 | Mega Mushroom | F22 | 3x Mushroom |
+| F17 | Blue Shell | F23 | Clear item |
+| F18 | Lightning | F24 | Toggle hold |
+
+Map your side panel buttons to F13–F24 in the Logitech software (or any key remapper) and you're good to go.
 
 ## How It Works
 
